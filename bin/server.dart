@@ -93,7 +93,7 @@ Future<Response> _keyInitHandler(Request request, String iso) async {
   if (field63 == null) {
     return Response.internalServerError(body: "Campo 63 no encontrado.");
   }
-  final tokenEWIndex = field63.indexOf("! EW00538");
+  final tokenEWIndex = field63.indexOf("! EW");
   final tokenEW = field63.substring(tokenEWIndex, tokenEWIndex + 548);
   final cipheredTK = tokenEW.substring(10, 522).toHexBytes();
   final tkKCV = tokenEW.substring(522, 528).toHexBytes();
@@ -111,7 +111,11 @@ Future<Response> _keyInitHandler(Request request, String iso) async {
   final decrypted = encrypter.decryptBytes(Encrypted(cipheredTK));
   final transportKey = Uint8List.fromList(decrypted);
 
-  final tkDES = DES3(key: transportKey.toList(), mode: DESMode.ECB);
+  final tkDES = DES3(
+    key: transportKey.toList(),
+    mode: DESMode.ECB,
+    paddingType: DESPaddingType.None,
+  );
   final kcvInts = tkDES.encrypt(List.filled(8, 0x00)).sublist(0, 3);
   final kcv = Uint8List.fromList(kcvInts);
   if (kcv.toHexStr() != tkKCV.toHexStr()) {
@@ -123,12 +127,15 @@ Future<Response> _keyInitHandler(Request request, String iso) async {
 
   final k0 = "FDB5C138D31DDCAA6C5DC76827EF487E".toHexBytes();
   final ksn = "0102012345678AE00000".toHexBytes();
-  final k0DES = DES3(key: k0.toList(), mode: DESMode.ECB);
+  final k0DES = DES3(
+    key: k0.toList(),
+    mode: DESMode.ECB,
+    paddingType: DESPaddingType.None,
+  );
   final k0KCVInts = k0DES.encrypt(List.filled(8, 0x00)).sublist(0, 3);
   final k0KCV = Uint8List.fromList(k0KCVInts);
 
   final k0Ciphered = Uint8List.fromList(tkDES.encrypt(k0.toList()));
-
   final isoResponse = IsoMessage.withFields(isoSaleDefinitions);
   isoResponse.mti = Mti.fromString("0210");
 
@@ -144,6 +151,7 @@ String isoTokenEX({
   required Uint8List k0KCV,
 }) {
   assert(k0Ciphered.length == 8);
+  assert(ksn.length == 10);
   assert(k0KCV.length == 3);
 
   final k0CipheredStr = k0Ciphered.toHexStr();
