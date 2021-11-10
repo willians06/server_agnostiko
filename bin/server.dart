@@ -62,6 +62,7 @@ final isoSaleDefinitions = {
   23: FieldDefinition.fixed(IsoFieldFormat.N, 3),
   35: FieldDefinition.variable(IsoFieldFormat.NS, 37),
   37: FieldDefinition.fixed(IsoFieldFormat.ANS, 12),
+  39: FieldDefinition.fixed(IsoFieldFormat.AN, 2),
   41: FieldDefinition.fixed(IsoFieldFormat.ANS, 8),
   48: FieldDefinition.variable(IsoFieldFormat.ANS, 27,
       fieldLenFormat: IsoFieldLen.LLLVAR),
@@ -84,6 +85,9 @@ final isoSaleDefinitions = {
 };
 
 Future<Response> _keyInitHandler(Request request, String iso) async {
+  final isoResponse = IsoMessage.withFields(isoSaleDefinitions);
+  isoResponse.mti = Mti.fromString("0210");
+
   final isoBytes = iso.toHexBytes();
   final isoRequest = IsoMessage.unpack(
     isoBytes,
@@ -93,16 +97,16 @@ Future<Response> _keyInitHandler(Request request, String iso) async {
   if (field63 == null) {
     return Response.internalServerError(body: "Campo 63 no encontrado.");
   }
-  final tokenEWIndex = field63.indexOf("! EW00538");
+  final tokenEWIndex = field63.indexOf("! EW");
   final tokenEW = field63.substring(tokenEWIndex, tokenEWIndex + 548);
   final cipheredTK = tokenEW.substring(10, 522).toHexBytes();
   final tkKCV = tokenEW.substring(522, 528).toHexBytes();
   final crcRequest = tokenEW.substring(540, 548).toHexBytes();
   final crcValue = calculateCRC32(AsciiCodec().encode(cipheredTK.toHexStr()));
   if (crcRequest.toHexStr() != crcValue.toHexStr()) {
-    return Response.internalServerError(
-      body: "El CRC32 de la llave cifrada no coincide.",
-    );
+    isoResponse.setField(39, "73"); // Error en CRC
+    isoResponse.setField(63, tokenER() + tokenEXError("03"));
+    return Response.ok(isoResponse.pack().toHexStr());
   }
   print("CRC32 OK!");
 
@@ -111,39 +115,56 @@ Future<Response> _keyInitHandler(Request request, String iso) async {
   final decrypted = encrypter.decryptBytes(Encrypted(cipheredTK));
   final transportKey = Uint8List.fromList(decrypted);
 
-  final tkDES = DES3(key: transportKey.toList(), mode: DESMode.ECB);
+  final tkDES = DES3(
+    key: transportKey.toList(),
+    mode: DESMode.ECB,
+    paddingType: DESPaddingType.None,
+  );
   final kcvInts = tkDES.encrypt(List.filled(8, 0x00)).sublist(0, 3);
   final kcv = Uint8List.fromList(kcvInts);
   if (kcv.toHexStr() != tkKCV.toHexStr()) {
-    return Response.internalServerError(
-      body: "El KCV de la llave de transporte no coincide.",
-    );
+    isoResponse.setField(39, "72"); // Error Inicializando llaves
+    isoResponse.setField(63, tokenER() + tokenEXError("01"));
+    return Response.ok(isoResponse.pack().toHexStr());
   }
   print("KCV OK!");
 
   final k0 = "FDB5C138D31DDCAA6C5DC76827EF487E".toHexBytes();
   final ksn = "0102012345678AE00000".toHexBytes();
-  final k0DES = DES3(key: k0.toList(), mode: DESMode.ECB);
+  final k0DES = DES3(
+    key: k0.toList(),
+    mode: DESMode.ECB,
+    paddingType: DESPaddingType.None,
+  );
   final k0KCVInts = k0DES.encrypt(List.filled(8, 0x00)).sublist(0, 3);
   final k0KCV = Uint8List.fromList(k0KCVInts);
-
   final k0Ciphered = Uint8List.fromList(tkDES.encrypt(k0.toList()));
 
-  final isoResponse = IsoMessage.withFields(isoSaleDefinitions);
-  isoResponse.mti = Mti.fromString("0210");
-
-  final tokenEX = isoTokenEX(k0Ciphered: k0Ciphered, ksn: ksn, k0KCV: k0KCV);
-  isoResponse.setField(63, tokenEX);
-
+  isoResponse.setField(39, "00"); // OK
+  isoResponse.setField(
+    63,
+    tokenER() + tokenEX(k0Ciphered: k0Ciphered, ksn: ksn, k0KCV: k0KCV),
+  );
   return Response.ok(isoResponse.pack().toHexStr());
 }
 
-String isoTokenEX({
+String tokenER({
+  bool suggestKeyInit = false,
+  bool requireKeyInit = false,
+  bool shouldUpdateBIN = false,
+}) {
+  return "! ER00002 " + // Header
+      (requireKeyInit ? "2" : (suggestKeyInit ? "1" : "0")) +
+      (shouldUpdateBIN ? "1" : "0");
+}
+
+String tokenEX({
   required Uint8List k0Ciphered,
   required Uint8List ksn,
   required Uint8List k0KCV,
 }) {
   assert(k0Ciphered.length == 8);
+  assert(ksn.length == 10);
   assert(k0KCV.length == 3);
 
   final k0CipheredStr = k0Ciphered.toHexStr();
@@ -155,4 +176,14 @@ String isoTokenEX({
           "00" + // Estatus de generación de llave: OK
           crcValue.toHexStr() // Verificación CRC32 de llave nueva cifrada
       ;
+}
+
+String tokenEXError(String errorCode) {
+  assert(errorCode.length == 2);
+  return "! EX00068 " + // Header
+      Uint8List(16).toHexStr() +
+      Uint8List(10).toHexStr() +
+      Uint8List(3).toHexStr() +
+      errorCode + // Estatus de generación de llave
+      Uint8List(4).toHexStr();
 }
