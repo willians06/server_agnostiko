@@ -62,6 +62,7 @@ final isoSaleDefinitions = {
   23: FieldDefinition.fixed(IsoFieldFormat.N, 3),
   35: FieldDefinition.variable(IsoFieldFormat.NS, 37),
   37: FieldDefinition.fixed(IsoFieldFormat.ANS, 12),
+  39: FieldDefinition.fixed(IsoFieldFormat.AN, 2),
   41: FieldDefinition.fixed(IsoFieldFormat.ANS, 8),
   48: FieldDefinition.variable(IsoFieldFormat.ANS, 27,
       fieldLenFormat: IsoFieldLen.LLLVAR),
