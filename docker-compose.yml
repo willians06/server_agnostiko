@@ -1,0 +1,13 @@
+version: "3.6"
+
+services:
+  server_agnostiko:
+    build: .
+    ports:
+      - "80:8080"
+    secrets:
+      - capx_private_rsa_key
+
+secrets:
+  capx_private_rsa_key:
+    file: ./keys/private.pem
