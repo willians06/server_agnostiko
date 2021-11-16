@@ -48,7 +48,9 @@ final _staticHandler =
     shelf_static.createStaticHandler('public', defaultDocument: 'index.html');
 
 // Router instance to handler requests.
-final _router = shelf_router.Router()..get('/keyinit/<iso>', _keyInitHandler);
+final _router = shelf_router.Router()
+  ..get('/sale/<iso>', _saleHandler)
+  ..get('/keyinit/<iso>', _keyInitHandler);
 
 final isoSaleDefinitions = {
   2: FieldDefinition.variable(IsoFieldFormat.N, 19),
@@ -84,6 +86,20 @@ final isoSaleDefinitions = {
   ),
 };
 
+Future<Response> _saleHandler(Request request, String iso) async {
+  final isoResponse = IsoMessage.withFields(isoSaleDefinitions);
+  isoResponse.mti = Mti.fromString("0210");
+
+  final isoBytes = iso.toHexBytes();
+  final isoRequest = IsoMessage.unpack(
+    isoBytes,
+    fieldDefinitions: isoSaleDefinitions,
+  );
+
+  isoResponse.setField(39, "00"); // OK
+  return Response.ok(isoResponse.pack().toHexStr());
+}
+
 Future<Response> _keyInitHandler(Request request, String iso) async {
   final isoResponse = IsoMessage.withFields(isoSaleDefinitions);
   isoResponse.mti = Mti.fromString("0210");
@@ -102,7 +118,9 @@ Future<Response> _keyInitHandler(Request request, String iso) async {
   final cipheredTK = tokenEW.substring(10, 522).toHexBytes();
   final tkKCV = tokenEW.substring(522, 528).toHexBytes();
   final crcRequest = tokenEW.substring(540, 548).toHexBytes();
-  final crcValue = calculateCRC32(AsciiCodec().encode(cipheredTK.toHexStr()));
+
+  final cipheredTKStr = cipheredTK.toHexStr().toUpperCase();
+  final crcValue = calculateCRC32(AsciiCodec().encode(cipheredTKStr));
   if (crcRequest.toHexStr() != crcValue.toHexStr()) {
     isoResponse.setField(39, "73"); // Error en CRC
     isoResponse.setField(63, tokenER() + tokenEXError("03"));
