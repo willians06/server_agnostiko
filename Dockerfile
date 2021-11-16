@@ -21,6 +21,7 @@ COPY --from=build /app/bin/server /app/bin/
 
 # Include files in the /public directory to enable static asset handling
 COPY --from=build /app/public/ /public
+COPY --from=build /app/keys/ /keys
 
 # Start server.
 EXPOSE 8080
