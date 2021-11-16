@@ -315,8 +315,7 @@ Future<Response> _keyInitHandler(Request request, String iso) async {
   }
   print("CRC32 OK!");
 
-  final privKey = await parseKeyFromFile<RSAPrivateKey>(
-      '/run/secrets/capx_private_rsa_key');
+  final privKey = await parseKeyFromFile<RSAPrivateKey>('./keys/private.pem');
   final encrypter = Encrypter(RSA(privateKey: privKey));
   final decrypted = encrypter.decryptBytes(Encrypted(cipheredTK));
   final transportKey = Uint8List.fromList(decrypted);
