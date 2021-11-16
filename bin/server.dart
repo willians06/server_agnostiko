@@ -48,7 +48,9 @@ final _staticHandler =
     shelf_static.createStaticHandler('public', defaultDocument: 'index.html');
 
 // Router instance to handler requests.
-final _router = shelf_router.Router()..get('/keyinit/<iso>', _keyInitHandler);
+final _router = shelf_router.Router()
+  ..get('/sale/<iso>', _saleHandler)
+  ..get('/keyinit/<iso>', _keyInitHandler);
 
 final isoSaleDefinitions = {
   2: FieldDefinition.variable(IsoFieldFormat.N, 19),
@@ -84,6 +86,207 @@ final isoSaleDefinitions = {
   ),
 };
 
+Future<Response> _saleHandler(Request request, String iso) async {
+  final isoResponse = IsoMessage.withFields(isoSaleDefinitions);
+  isoResponse.mti = Mti.fromString("0210");
+
+  final isoBytes = iso.toHexBytes();
+  final isoRequest = IsoMessage.unpack(
+    isoBytes,
+    fieldDefinitions: isoSaleDefinitions,
+  );
+
+  final field63 = isoRequest.getField(63) ?? "";
+  final tokenESIndex = field63.indexOf("! ES");
+  final tokenES = field63.substring(tokenESIndex, tokenESIndex + 70);
+  bool isCiphered = tokenES[50] == "5";
+  if (isCiphered) {
+    final tokenEZIndex = field63.indexOf("! EZ");
+    final tokenEZ = field63.substring(tokenEZIndex, tokenEZIndex + 108);
+    final ksn = tokenEZ.substring(10, 30).toHexBytes();
+    print("KSN: ${ksn.toHexStr()}");
+    final cipheredData = tokenEZ.substring(48, 96).toHexBytes();
+
+    final key = _deriveDukptSessionKey(bdk, ksn);
+    final des = DES3(
+      key: key.toList(),
+      mode: DESMode.ECB,
+      paddingType: DESPaddingType.None,
+    );
+    final decrypted = Uint8List.fromList(des.decrypt(cipheredData));
+    print("DECRYPTED TRACK 2 + CVV: ${decrypted.toHexStr()}");
+    if (decrypted.toHexStr()[0] == "4") {
+      // Para probar, se rechazan los PAN que empiezan con '4'
+      // (por lo general, VISA)
+      isoResponse.setField(39, "01"); // Rechazado
+      return Response.ok(isoResponse.pack().toHexStr());
+    }
+  }
+
+  isoResponse.setField(39, "00"); // OK
+  return Response.ok(isoResponse.pack().toHexStr());
+}
+
+Uint8List _deriveDukptSessionKey(Uint8List bdk, Uint8List ksn) {
+  assert(bdk.length == 16);
+  assert(ksn.length == 10);
+
+  final ipek = _createIPEK(bdk, ksn);
+  return _createDataKeyHex(ipek, ksn);
+}
+
+Uint8List _createIPEK(Uint8List bdk, Uint8List ksn) {
+  int bdkLen = 16;
+  int ksnLen = 10;
+  assert(bdk.length == bdkLen);
+  assert(ksn.length == ksnLen);
+
+  final halfBDK = bdk.sublist(0, 8);
+  final key = Uint8List.fromList(bdk + halfBDK);
+
+  final ksnMask = "FFFFFFFFFFFFFFE00000".toHexBytes();
+  var maskedKSN = Uint8List(ksnLen);
+  for (int i = 0; i < ksnLen; i++) {
+    maskedKSN[i] = ksnMask[i] & ksn[i];
+  }
+  maskedKSN = maskedKSN.sublist(0, 8); // los primeros 8 bytes
+
+  final ksnDES = DES3(
+    key: key.toList(),
+    mode: DESMode.ECB,
+    paddingType: DESPaddingType.None,
+  );
+  final cipher1 = Uint8List.fromList(ksnDES.encrypt(maskedKSN.toList()));
+
+  final bdkMask = "C0C0C0C000000000C0C0C0C000000000".toHexBytes();
+  final maskedBDK = Uint8List(bdkLen);
+  for (int i = 0; i < bdkLen; i++) {
+    maskedBDK[i] = bdkMask[i] ^ bdk[i];
+  }
+  final halfMaskedBDK = maskedBDK.sublist(0, 8);
+  final key2 = Uint8List.fromList(maskedBDK + halfMaskedBDK);
+  final bdkDES = DES3(
+    key: key2.toList(),
+    mode: DESMode.ECB,
+    paddingType: DESPaddingType.None,
+  );
+  final cipher2 = Uint8List.fromList(bdkDES.encrypt(maskedKSN.toList()));
+
+  final ipek = Uint8List.fromList(cipher1 + cipher2);
+  return ipek;
+}
+
+Uint8List _createDataKeyHex(Uint8List ipek, Uint8List ksn) {
+  final derivedKey = _deriveKeyHex(ipek, ksn);
+  final variantMask = "0000000000FF00000000000000FF0000".toHexBytes();
+  final maskedKey = Uint8List(16);
+  for (int i = 0; i < 16; i++) {
+    maskedKey[i] = variantMask[i] ^ derivedKey[i];
+  }
+
+  final halfKey = maskedKey.sublist(0, 8);
+  final expandedKey = Uint8List.fromList(maskedKey + halfKey);
+  final des = DES3(
+    key: expandedKey.toList(),
+    mode: DESMode.ECB,
+    paddingType: DESPaddingType.None,
+  );
+  final left = des.encrypt(maskedKey.sublist(0, 8));
+  final right = des.encrypt(maskedKey.sublist(8));
+  return Uint8List.fromList(left + right);
+}
+
+Uint8List _deriveKeyHex(Uint8List ipek, Uint8List ksn) {
+  final ksnMask = "FFFFFFFFFFFFFFE00000".toHexBytes();
+  final ksnBottom = ksn.sublist(2); // extraemos los últimos 8 bytes
+  var baseKSN = Uint8List(8);
+  for (int i = 0; i < 8; i++) {
+    baseKSN[i] = ksnMask[i] & ksnBottom[i];
+  }
+
+  // los últimos 3 bytes (que contienen el contador)
+  final ksnInt = int.parse(ksn.sublist(7).toHexStr(), radix: 16);
+  final counter = ksnInt & 0x1FFFFF;
+
+  var curKey = ipek;
+  for (var shiftReg = 0x100000; shiftReg > 0; shiftReg >>= 1) {
+    if ((shiftReg & counter) > 0) {
+      var tmpKSN = baseKSN.sublist(0, 5).toList(growable: true);
+      final byte5 = baseKSN[5];
+      final byte6 = baseKSN[6];
+      final byte7 = baseKSN[7];
+      var tmpLong = (byte5 << 16) + (byte6 << 8) + byte7;
+      tmpLong |= shiftReg;
+      tmpKSN.add(tmpLong >> 16);
+      tmpKSN.add(255 & (tmpLong >> 8));
+      tmpKSN.add(255 & tmpLong);
+
+      baseKSN = Uint8List.fromList(tmpKSN); // remember the updated value
+
+      curKey = _generateKey(curKey, Uint8List.fromList(tmpKSN));
+    }
+  }
+  return curKey;
+}
+
+Uint8List _createPINKeyHex(Uint8List ipek, Uint8List ksn) {
+  final derivedKey = _deriveKeyHex(ipek, ksn); // derive DUKPT basis key
+  final variantMask =
+      '00000000000000FF00000000000000FF'.toHexBytes(); // PIN variant
+  final result = Uint8List(16);
+  for (int i = 0; i < 16; i++) {
+    result[i] = variantMask[i] ^ derivedKey[i];
+  }
+  return result;
+}
+
+Uint8List _createMACKeyHex(Uint8List ipek, Uint8List ksn) {
+  final derivedKey = _deriveKeyHex(ipek, ksn); // derive DUKPT basis key
+  final variantMask =
+      '000000000000FF00000000000000FF00'.toHexBytes(); // MAC variant
+  final result = Uint8List(16);
+  for (int i = 0; i < 16; i++) {
+    result[i] = variantMask[i] ^ derivedKey[i];
+  }
+  return result;
+}
+
+Uint8List _generateKey(Uint8List key, Uint8List ksn) {
+  final mask = 'C0C0C0C000000000C0C0C0C000000000'.toHexBytes();
+  final maskedKey = Uint8List(16);
+  for (int i = 0; i < 16; i++) {
+    maskedKey[i] = mask[i] ^ key[i];
+  }
+
+  final left = _encryptRegister(maskedKey, ksn);
+  final right = _encryptRegister(key, ksn);
+
+  return Uint8List.fromList(left + right); // binary
+}
+
+Uint8List _encryptRegister(Uint8List key, Uint8List reg) {
+  final bottom8 = key.sublist(key.length - 8); // bottom 8 bytes
+  final top8 = key.sublist(0, 8); // top 8 bytes
+  final bottom8xorKSN = Uint8List(8);
+  for (int i = 0; i < 8; i++) {
+    bottom8xorKSN[i] = bottom8[i] ^ reg[i];
+  }
+
+  final des = DES(
+    key: top8.toList(),
+    mode: DESMode.ECB,
+    paddingType: DESPaddingType.None,
+  );
+  final encrypted = des.encrypt(bottom8xorKSN);
+
+  final result = Uint8List(8);
+  for (int i = 0; i < 8; i++) {
+    result[i] = bottom8[i] ^ encrypted[i];
+  }
+  return result;
+}
+
+final bdk = "00112233445566778899AABBCCDDEEFF".toHexBytes();
 Future<Response> _keyInitHandler(Request request, String iso) async {
   final isoResponse = IsoMessage.withFields(isoSaleDefinitions);
   isoResponse.mti = Mti.fromString("0210");
@@ -102,7 +305,9 @@ Future<Response> _keyInitHandler(Request request, String iso) async {
   final cipheredTK = tokenEW.substring(10, 522).toHexBytes();
   final tkKCV = tokenEW.substring(522, 528).toHexBytes();
   final crcRequest = tokenEW.substring(540, 548).toHexBytes();
-  final crcValue = calculateCRC32(AsciiCodec().encode(cipheredTK.toHexStr()));
+
+  final cipheredTKStr = cipheredTK.toHexStr().toUpperCase();
+  final crcValue = calculateCRC32(AsciiCodec().encode(cipheredTKStr));
   if (crcRequest.toHexStr() != crcValue.toHexStr()) {
     isoResponse.setField(39, "73"); // Error en CRC
     isoResponse.setField(63, tokenER() + tokenEXError("03"));
@@ -110,7 +315,7 @@ Future<Response> _keyInitHandler(Request request, String iso) async {
   }
   print("CRC32 OK!");
 
-  final privKey = await parseKeyFromFile<RSAPrivateKey>('private.pem');
+  final privKey = await parseKeyFromFile<RSAPrivateKey>('./keys/private.pem');
   final encrypter = Encrypter(RSA(privateKey: privKey));
   final decrypted = encrypter.decryptBytes(Encrypted(cipheredTK));
   final transportKey = Uint8List.fromList(decrypted);
