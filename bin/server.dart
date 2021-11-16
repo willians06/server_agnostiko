@@ -96,6 +96,33 @@ Future<Response> _saleHandler(Request request, String iso) async {
     fieldDefinitions: isoSaleDefinitions,
   );
 
+  final field63 = isoRequest.getField(63) ?? "";
+  final tokenESIndex = field63.indexOf("! ES");
+  final tokenES = field63.substring(tokenESIndex, tokenESIndex + 70);
+  bool isCiphered = tokenES[50] == "5";
+  if (isCiphered) {
+    final tokenEZIndex = field63.indexOf("! EZ");
+    final tokenEZ = field63.substring(tokenEZIndex, tokenEZIndex + 108);
+    final ksn = tokenEZ.substring(10, 30).toHexBytes();
+    print("KSN: ${ksn.toHexStr()}");
+    final cipheredData = tokenEZ.substring(48, 96).toHexBytes();
+
+    final key = _deriveDukptSessionKey(bdk, ksn);
+    final des = DES3(
+      key: key.toList(),
+      mode: DESMode.ECB,
+      paddingType: DESPaddingType.None,
+    );
+    final decrypted = Uint8List.fromList(des.decrypt(cipheredData));
+    print("DECRYPTED TRACK 2 + CVV: ${decrypted.toHexStr()}");
+    if (decrypted.toHexStr()[0] == "4") {
+      // Para probar, se rechazan los PAN que empiezan con '4'
+      // (por lo general, VISA)
+      isoResponse.setField(39, "01"); // Rechazado
+      return Response.ok(isoResponse.pack().toHexStr());
+    }
+  }
+
   isoResponse.setField(39, "00"); // OK
   return Response.ok(isoResponse.pack().toHexStr());
 }
