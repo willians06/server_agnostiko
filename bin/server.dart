@@ -96,34 +96,87 @@ Future<Response> _saleHandler(Request request, String iso) async {
     fieldDefinitions: isoSaleDefinitions,
   );
 
-  final field63 = isoRequest.getField(63) ?? "";
-  final tokenESIndex = field63.indexOf("! ES");
-  final tokenES = field63.substring(tokenESIndex, tokenESIndex + 70);
-  bool isCiphered = tokenES[50] == "5";
-  if (isCiphered) {
-    final tokenEZIndex = field63.indexOf("! EZ");
-    final tokenEZ = field63.substring(tokenEZIndex, tokenEZIndex + 108);
-    final ksn = tokenEZ.substring(10, 30).toHexBytes();
-    print("KSN: ${ksn.toHexStr()}");
-    final cipheredData = tokenEZ.substring(48, 96).toHexBytes();
+  String pan;
 
-    final key = _deriveDukptSessionKey(bdk, ksn);
-    final des = DES3(
-      key: key.toList(),
-      mode: DESMode.ECB,
-      paddingType: DESPaddingType.None,
-    );
-    final decrypted = Uint8List.fromList(des.decrypt(cipheredData));
-    print("DECRYPTED TRACK 2 + CVV: ${decrypted.toHexStr()}");
-    if (decrypted.toHexStr()[0] == "4") {
-      // Para probar, se rechazan los PAN que empiezan con '4'
-      // (por lo general, VISA)
-      isoResponse.setField(39, "01"); // Rechazado
-      return Response.ok(isoResponse.pack().toHexStr());
+  // si la transacción es digitada, el PAN viene en el campo 2
+  final field2 = isoRequest.getField(2);
+  // si la transacción es de banda, el PAN viene en el track 2 del campo 35
+  final field35 = isoRequest.getField(35);
+  // si la transacción es de chip y encriptada, el track 2 viene en el campo 63
+  final field63 = isoRequest.getField(63);
+
+  if (field2 != null && field2.isNotEmpty) {
+    pan = field2;
+  } else if (field35 != null && field35.isNotEmpty) {
+    final track2 = field35.toUpperCase();
+
+    int separatorIndex;
+    if (track2.contains("D")) {
+      separatorIndex = track2.indexOf("D");
+    } else if (track2.contains("=")) {
+      separatorIndex = track2.indexOf("=");
+    } else {
+      return _rejectSale(isoResponse); // Rechazado, no se pudo extraer el PAN
     }
+    pan = track2.substring(0, separatorIndex);
+  } else if (field63 != null && field63.isNotEmpty) {
+    final tokenESIndex = field63.indexOf("! ES");
+    if (tokenESIndex < 0) {
+      return _rejectSale(isoResponse); // Rechazado, no se pudo extraer el PAN
+    }
+    final tokenES = field63.substring(tokenESIndex, tokenESIndex + 70);
+    if (tokenES.length != 70) {
+      return _rejectSale(isoResponse); // Rechazado, no se pudo extraer el PAN
+    }
+    bool isCiphered = tokenES[50] == "5";
+    if (isCiphered) {
+      final tokenEZIndex = field63.indexOf("! EZ");
+      final tokenEZ = field63.substring(tokenEZIndex, tokenEZIndex + 108);
+      final ksn = tokenEZ.substring(10, 30).toHexBytes();
+      print("KSN: ${ksn.toHexStr()}");
+      final cipheredData = tokenEZ.substring(48, 96).toHexBytes();
+
+      final key = _deriveDukptSessionKey(bdk, ksn);
+      final des = DES3(
+        key: key.toList(),
+        mode: DESMode.ECB,
+        paddingType: DESPaddingType.None,
+      );
+      final decrypted = Uint8List.fromList(des.decrypt(cipheredData));
+      final decryptedStr = decrypted.toHexStr().toUpperCase();
+      print("DECRYPTED TRACK 2 + CVV: $decryptedStr");
+
+      int separatorIndex;
+      if (decryptedStr.contains("D")) {
+        separatorIndex = decryptedStr.indexOf("D");
+      } else {
+        return _rejectSale(isoResponse); // Rechazado, no se pudo extraer el PAN
+      }
+      pan = decryptedStr.substring(0, separatorIndex);
+    } else {
+      return _rejectSale(isoResponse); // Rechazado, campo 63 debe venir cifrado
+    }
+  } else {
+    return _rejectSale(isoResponse); // Rechazado, no se pudo extraer el PAN
   }
 
+  print("PAN: $pan");
+  if (pan[0] == "4") {
+    // Para probar, se rechazan los PAN que empiezan con '4'
+    // (por lo general, VISA)
+    return _rejectSale(isoResponse);
+  } else {
+    return _approveSale(isoResponse);
+  }
+}
+
+Response _approveSale(IsoMessage isoResponse) {
   isoResponse.setField(39, "00"); // OK
+  return Response.ok(isoResponse.pack().toHexStr());
+}
+
+Response _rejectSale(IsoMessage isoResponse) {
+  isoResponse.setField(39, "01"); // Rechazado, no se pudo extraer el PAN
   return Response.ok(isoResponse.pack().toHexStr());
 }
 
