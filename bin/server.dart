@@ -116,17 +116,17 @@ Future<Response> _saleHandler(Request request, String iso) async {
     } else if (track2.contains("=")) {
       separatorIndex = track2.indexOf("=");
     } else {
-      return _rejectSale(isoResponse); // Rechazado, no se pudo extraer el PAN
+      return _rejectSale(isoResponse, "Problema con separador de track2."); // Rechazado, no se pudo extraer el PAN
     }
     pan = track2.substring(0, separatorIndex);
   } else if (field63 != null && field63.isNotEmpty) {
     final tokenESIndex = field63.indexOf("! ES");
     if (tokenESIndex < 0) {
-      return _rejectSale(isoResponse); // Rechazado, no se pudo extraer el PAN
+      return _rejectSale(isoResponse, "Token ES no encontrado en campo 63"); // Rechazado, no se pudo extraer el PAN
     }
     final tokenES = field63.substring(tokenESIndex, tokenESIndex + 70);
     if (tokenES.length != 70) {
-      return _rejectSale(isoResponse); // Rechazado, no se pudo extraer el PAN
+      return _rejectSale(isoResponse, "Token ES de longitud inválida."); // Rechazado, no se pudo extraer el PAN
     }
     bool isCiphered = tokenES[50] == "5";
     if (isCiphered) {
@@ -150,21 +150,21 @@ Future<Response> _saleHandler(Request request, String iso) async {
       if (decryptedStr.contains("D")) {
         separatorIndex = decryptedStr.indexOf("D");
       } else {
-        return _rejectSale(isoResponse); // Rechazado, no se pudo extraer el PAN
+        return _rejectSale(isoResponse, "El Track desencriptado no contiene el caracter 'D'"); // Rechazado, no se pudo extraer el PAN
       }
       pan = decryptedStr.substring(0, separatorIndex);
     } else {
-      return _rejectSale(isoResponse); // Rechazado, campo 63 debe venir cifrado
+      return _rejectSale(isoResponse, "El campo 63 no viene cifrado"); // Rechazado, campo 63 debe venir cifrado
     }
   } else {
-    return _rejectSale(isoResponse); // Rechazado, no se pudo extraer el PAN
+    return _rejectSale(isoResponse, "No se pudo extraer el PAN del campo 35 o 63"); // Rechazado, no se pudo extraer el PAN
   }
 
   print("PAN: $pan");
   if (pan[0] == "4") {
     // Para probar, se rechazan los PAN que empiezan con '4'
     // (por lo general, VISA)
-    return _rejectSale(isoResponse);
+    return _rejectSale(isoResponse, "El PAN empieza por '4'");
   } else {
     return _approveSale(isoResponse);
   }
@@ -175,7 +175,8 @@ Response _approveSale(IsoMessage isoResponse) {
   return Response.ok(isoResponse.pack().toHexStr());
 }
 
-Response _rejectSale(IsoMessage isoResponse) {
+Response _rejectSale(IsoMessage isoResponse, String errorMessage) {
+  print("Error: $errorMessage");
   isoResponse.setField(39, "01"); // Rechazado, no se pudo extraer el PAN
   return Response.ok(isoResponse.pack().toHexStr());
 }
