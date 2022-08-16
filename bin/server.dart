@@ -50,7 +50,8 @@ final _staticHandler =
 // Router instance to handler requests.
 final _router = shelf_router.Router()
   ..get('/sale/<iso>', _saleHandler)
-  ..get('/keyinit/<iso>', _keyInitHandler);
+  ..get('/keyinit/<iso>', _keyInitHandler)
+  ..get('/token/<serialNumber>', _tokenHandler);
 
 final isoSaleDefinitions = {
   2: FieldDefinition.variable(IsoFieldFormat.N, 19),
@@ -86,6 +87,71 @@ final isoSaleDefinitions = {
   ),
 };
 
+final List<String> _registeredTerminals = [
+  // Willians
+  "9210183926", // Newpos 9210
+  "PB05D97A60016", // Sunmi P2
+  "0821380883", // PAX A920
+  "N77201526624", // N910
+  "NA8900168013", // N910 Pro
+  "J97600001997", // SP930
+  "B77800204314", // SP830
+  "Q28810270001", // ME60
+  "Q77B00856345", // ME30SU
+  "U17400000905", // U1000
+  //Yura
+  "9220075125", // Newpos 9220
+  "N78402348085", // N910 A7
+  "N77401557306", // N910 A5
+  "Q77B00856353", // ME30SU
+  "0000U18451005068", //U1000
+];
+
+Future<Response> _tokenHandler(Request request, String serialNumber) async {
+  if (!_registeredTerminals.contains(serialNumber)) {
+    return Response.badRequest(body: "invalid ID");
+  }
+
+  final privateKey =
+      await parseKeyFromFile<RSAPrivateKey>('./keys/private2.pem');
+  final tokenVersion =
+      Uint8List.fromList([0x01]); // el primer byte indica la versión
+
+  final nowTimestamp = DateTime.now().millisecondsSinceEpoch;
+  final hour = Duration(hours: 48).inMilliseconds;
+  final expTimestamp = nowTimestamp + hour;
+  print("Exp Int: '$expTimestamp'");
+  final expBase16 = expTimestamp.toRadixString(16).padLeft(12, '0');
+  final expBytes = expBase16.toHexBytes();
+
+  final serialNumberBytes = AsciiCodec().encode(serialNumber);
+
+  String str = "";
+  for (int byte in serialNumberBytes) {
+    final s = byte.toRadixString(16).padLeft(2, '0');
+    str += "0x$s,";
+  }
+  print(str);
+
+  str = "";
+  for (String val in serialNumber.split('')) {
+    str += "'$val',";
+  }
+  print(str);
+
+  final payload =
+      Uint8List.fromList(tokenVersion + expBytes + serialNumberBytes);
+  print("Payload: ${payload.toHexStr()}");
+
+  final signer =
+      Signer(RSASigner(RSASignDigest.SHA256, privateKey: privateKey));
+  final signature = signer.signBytes(payload).bytes;
+  final token = Uint8List.fromList(tokenVersion + signature + expBytes);
+  print("Token: '${token.toHexStr()}'");
+
+  return Response.ok(token);
+}
+
 Future<Response> _saleHandler(Request request, String iso) async {
   final isoResponse = IsoMessage.withFields(isoSaleDefinitions);
   isoResponse.mti = Mti.fromString("0210");
@@ -96,34 +162,94 @@ Future<Response> _saleHandler(Request request, String iso) async {
     fieldDefinitions: isoSaleDefinitions,
   );
 
-  final field63 = isoRequest.getField(63) ?? "";
-  final tokenESIndex = field63.indexOf("! ES");
-  final tokenES = field63.substring(tokenESIndex, tokenESIndex + 70);
-  bool isCiphered = tokenES[50] == "5";
-  if (isCiphered) {
-    final tokenEZIndex = field63.indexOf("! EZ");
-    final tokenEZ = field63.substring(tokenEZIndex, tokenEZIndex + 108);
-    final ksn = tokenEZ.substring(10, 30).toHexBytes();
-    print("KSN: ${ksn.toHexStr()}");
-    final cipheredData = tokenEZ.substring(48, 96).toHexBytes();
+  String pan;
 
-    final key = _deriveDukptSessionKey(bdk, ksn);
-    final des = DES3(
-      key: key.toList(),
-      mode: DESMode.ECB,
-      paddingType: DESPaddingType.None,
-    );
-    final decrypted = Uint8List.fromList(des.decrypt(cipheredData));
-    print("DECRYPTED TRACK 2 + CVV: ${decrypted.toHexStr()}");
-    if (decrypted.toHexStr()[0] == "4") {
-      // Para probar, se rechazan los PAN que empiezan con '4'
-      // (por lo general, VISA)
-      isoResponse.setField(39, "01"); // Rechazado
-      return Response.ok(isoResponse.pack().toHexStr());
+  // si la transacción es digitada, el PAN viene en el campo 2
+  final field2 = isoRequest.getField(2);
+  // si la transacción es de banda, el PAN viene en el track 2 del campo 35
+  final field35 = isoRequest.getField(35);
+  // si la transacción es de chip y encriptada, el track 2 viene en el campo 63
+  final field63 = isoRequest.getField(63);
+
+  if (field2 != null && field2.isNotEmpty) {
+    pan = field2;
+  } else if (field35 != null && field35.isNotEmpty) {
+    final track2 = field35.toUpperCase();
+
+    int separatorIndex;
+    if (track2.contains("D")) {
+      separatorIndex = track2.indexOf("D");
+    } else if (track2.contains("=")) {
+      separatorIndex = track2.indexOf("=");
+    } else {
+      return _rejectSale(isoResponse,
+          "Problema con separador de track2."); // Rechazado, no se pudo extraer el PAN
     }
+    pan = track2.substring(0, separatorIndex);
+  } else if (field63 != null && field63.isNotEmpty) {
+    final tokenESIndex = field63.indexOf("! ES");
+    if (tokenESIndex < 0) {
+      return _rejectSale(isoResponse,
+          "Token ES no encontrado en campo 63"); // Rechazado, no se pudo extraer el PAN
+    }
+    final tokenES = field63.substring(tokenESIndex, tokenESIndex + 70);
+    if (tokenES.length != 70) {
+      return _rejectSale(isoResponse,
+          "Token ES de longitud inválida."); // Rechazado, no se pudo extraer el PAN
+    }
+    bool isCiphered = tokenES[50] == "5";
+    if (isCiphered) {
+      final tokenEZIndex = field63.indexOf("! EZ");
+      final tokenEZ = field63.substring(tokenEZIndex, tokenEZIndex + 108);
+      final ksn = tokenEZ.substring(10, 30).toHexBytes();
+      print("KSN: ${ksn.toHexStr()}");
+      final cipheredData = tokenEZ.substring(48, 96).toHexBytes();
+
+      final key = _deriveDukptSessionKey(bdk, ksn);
+      final des = DES3(
+        key: key.toList(),
+        mode: DESMode.ECB,
+        paddingType: DESPaddingType.None,
+      );
+      final decrypted = Uint8List.fromList(des.decrypt(cipheredData));
+      final decryptedStr = decrypted.toHexStr().toUpperCase();
+      print("DECRYPTED TRACK 2 + CVV: $decryptedStr");
+
+      int separatorIndex;
+      if (decryptedStr.contains("D")) {
+        separatorIndex = decryptedStr.indexOf("D");
+      } else {
+        return _rejectSale(isoResponse,
+            "El Track desencriptado no contiene el caracter 'D'"); // Rechazado, no se pudo extraer el PAN
+      }
+      pan = decryptedStr.substring(0, separatorIndex);
+    } else {
+      return _rejectSale(isoResponse,
+          "El campo 63 no viene cifrado"); // Rechazado, campo 63 debe venir cifrado
+    }
+  } else {
+    return _rejectSale(isoResponse,
+        "No se pudo extraer el PAN del campo 35 o 63"); // Rechazado, no se pudo extraer el PAN
   }
 
+  print("PAN: $pan");
+  if (pan[0] == "4") {
+    // Para probar, se rechazan los PAN que empiezan con '4'
+    // (por lo general, VISA)
+    return _rejectSale(isoResponse, "El PAN empieza por '4'");
+  } else {
+    return _approveSale(isoResponse);
+  }
+}
+
+Response _approveSale(IsoMessage isoResponse) {
   isoResponse.setField(39, "00"); // OK
+  return Response.ok(isoResponse.pack().toHexStr());
+}
+
+Response _rejectSale(IsoMessage isoResponse, String errorMessage) {
+  print("Error: $errorMessage");
+  isoResponse.setField(39, "01"); // Rechazado, no se pudo extraer el PAN
   return Response.ok(isoResponse.pack().toHexStr());
 }
 
