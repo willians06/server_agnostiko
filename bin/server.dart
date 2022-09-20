@@ -99,7 +99,7 @@ final List<String> _registeredTerminals = [
   "Q28810270001", // ME60
   "Q77B00856345", // ME30SU
   "U17400000905", // U1000
-  //Yura
+  // Yura
   "9220075125", // Newpos 9220
   "N78402348085", // N910 A7
   "N77401557306", // N910 A5
@@ -107,6 +107,13 @@ final List<String> _registeredTerminals = [
   "0000U18451005068", // U1000
   "1850005928", // A920 PRO
   "Q29500022344", // ME60
+  // Jose Di Pietro
+  "9210183925", // New9210 Debug
+  "9210183924", // New9210 Prod
+  "0821188450", // A920 Debug
+  "0820844168", // A920 Prod
+  "N78402348103", // N910 Debug
+  "N78402348112", // N910 Prod
 ];
 
 Future<Response> _tokenHandler(Request request, String serialNumber) async {
