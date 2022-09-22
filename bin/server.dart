@@ -107,6 +107,7 @@ final List<String> _registeredTerminals = [
   "0000U18451005068", // U1000
   "1850005928", // A920 PRO
   "Q29500022344", // ME60
+  "N48400053601", // N850
   // Jose Di Pietro
   "9210183925", // New9210 Debug
   "9210183924", // New9210 Prod
