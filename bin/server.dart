@@ -12,46 +12,34 @@ import 'utils/utils.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart' as shelf_router;
-import 'package:shelf_static/shelf_static.dart' as shelf_static;
 import 'package:encrypt/encrypt.dart';
 import 'package:encrypt/encrypt_io.dart';
 import 'package:pointycastle/asymmetric/api.dart';
 import 'package:dart_des/dart_des.dart';
 
+final _router = shelf_router.Router()
+  ..get('/sale/<iso>', _saleHandler)
+  ..get('/keyinit/<iso>', _keyInitHandler)
+  ..get('/token/<serialNumber>', _tokenHandler);
+
+RSAPrivateKey? _tokenPrivateKey01;
+
 Future main() async {
-  // If the "PORT" environment variable is set, listen to it. Otherwise, 8080.
-  // https://cloud.google.com/run/docs/reference/container-contract#port
   final port = int.parse(Platform.environment['PORT'] ?? '8080');
+  final cascade = Cascade().add(_router);
 
-  // See https://pub.dev/documentation/shelf/latest/shelf/Cascade-class.html
-  final cascade = Cascade()
-      // First, serve files from the 'public' directory
-      .add(_staticHandler)
-      // If a corresponding file is not found, send requests to a `Router`
-      .add(_router);
+  print('Loading private token key...');
+  _tokenPrivateKey01 =
+      await parseKeyFromFile<RSAPrivateKey>('/run/secrets/token_key_01');
 
-  // See https://pub.dev/documentation/shelf/latest/shelf_io/serve.html
   final server = await shelf_io.serve(
-    // See https://pub.dev/documentation/shelf/latest/shelf/logRequests.html
-    logRequests()
-        // See https://pub.dev/documentation/shelf/latest/shelf/MiddlewareExtensions/addHandler.html
-        .addHandler(cascade.handler),
+    logRequests().addHandler(cascade.handler),
     InternetAddress.anyIPv4, // Allows external connections
     port,
   );
 
   print('Serving at http://${server.address.host}:${server.port}');
 }
-
-// Serve files from the file system.
-final _staticHandler =
-    shelf_static.createStaticHandler('public', defaultDocument: 'index.html');
-
-// Router instance to handler requests.
-final _router = shelf_router.Router()
-  ..get('/sale/<iso>', _saleHandler)
-  ..get('/keyinit/<iso>', _keyInitHandler)
-  ..get('/token/<serialNumber>', _tokenHandler);
 
 final isoSaleDefinitions = {
   2: FieldDefinition.variable(IsoFieldFormat.N, 19),
@@ -134,40 +122,28 @@ Future<Response> _tokenHandler(Request request, String serialNumber) async {
   if (!_registeredTerminals.contains(serialNumber)) {
     return Response.badRequest(body: "unauthorized device ID");
   }
+  final tokenPrivateKey = _tokenPrivateKey01;
+  if (tokenPrivateKey == null) {
+    print("private key missing");
+    return Response.badRequest(body: "internal server error");
+  }
 
-  final privateKey =
-      await parseKeyFromFile<RSAPrivateKey>('./keys/private2.pem');
   final tokenVersion =
       Uint8List.fromList([0x01]); // el primer byte indica la versión
 
   final nowTimestamp = DateTime.now().millisecondsSinceEpoch;
   final hour = Duration(hours: 48).inMilliseconds;
   final expTimestamp = nowTimestamp + hour;
-  print("Exp Int: '$expTimestamp'");
   final expBase16 = expTimestamp.toRadixString(16).padLeft(12, '0');
   final expBytes = expBase16.toHexBytes();
 
   final serialNumberBytes = AsciiCodec().encode(serialNumber);
-
-  String str = "";
-  for (int byte in serialNumberBytes) {
-    final s = byte.toRadixString(16).padLeft(2, '0');
-    str += "0x$s,";
-  }
-  print(str);
-
-  str = "";
-  for (String val in serialNumber.split('')) {
-    str += "'$val',";
-  }
-  print(str);
-
   final payload =
       Uint8List.fromList(tokenVersion + expBytes + serialNumberBytes);
   print("Payload: ${payload.toHexStr()}");
 
   final signer =
-      Signer(RSASigner(RSASignDigest.SHA256, privateKey: privateKey));
+      Signer(RSASigner(RSASignDigest.SHA256, privateKey: tokenPrivateKey));
   final signature = signer.signBytes(payload).bytes;
   final token = Uint8List.fromList(tokenVersion + signature + expBytes);
   print("Token: '${token.toHexStr()}'");

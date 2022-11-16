@@ -5,9 +5,9 @@ services:
     build: .
     ports:
       - "80:8080"
-        #    secrets:
-        #- capx_private_rsa_key
+    secrets:
+      - token_key_01
 
-        #secrets:
-        #  capx_private_rsa_key:
-        #    file: ./keys/private.pem
+secrets:
+  token_key_01:
+    file: ./keys/private2.pem
