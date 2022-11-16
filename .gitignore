@@ -2,3 +2,7 @@
 .dart_tool/
 .packages
 pubspec.lock
+
+# ignorar llaves privadas
+keys/
+*.pem
