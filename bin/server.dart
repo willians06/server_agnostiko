@@ -126,7 +126,7 @@ final List<String> _registeredTerminals = [
 
 Future<Response> _tokenHandler(Request request, String serialNumber) async {
   if (!_registeredTerminals.contains(serialNumber)) {
-    return Response.badRequest(body: "unauthorized device ID");
+    return Response.badRequest(body: "unauthorized device");
   }
   final tokenPrivateKey = _tokenPrivateKey01;
   if (tokenPrivateKey == null) {
