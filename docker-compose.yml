@@ -7,10 +7,7 @@ services:
       - "80:8080"
     secrets:
       - token_key_01
-      - capx_rsa_key
 
 secrets:
   token_key_01:
     file: ./token_key_01.pem
-  capx_rsa_key:
-    file: ./capx_rsa_key.pem

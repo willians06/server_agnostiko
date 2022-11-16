@@ -30,10 +30,13 @@ Future main() async {
   final cascade = Cascade().add(_router);
 
   print('Loading private keys...');
+  // la llave de tokens debe ser un secreto para mayor seguridad
   _tokenPrivateKey01 =
       await parseKeyFromFile<RSAPrivateKey>('/run/secrets/token_key_01');
-  _capxPrivateKey =
-      await parseKeyFromFile<RSAPrivateKey>('/run/secrets/capx_rsa_key');
+
+  // la llave de Cap X está en el repositorio porque no hace falta asegurarla
+  // ya que es solo de prueba
+  _capxPrivateKey = await parseKeyFromFile<RSAPrivateKey>('/capx_rsa_key');
 
   final server = await shelf_io.serve(
     logRequests().addHandler(cascade.handler),
