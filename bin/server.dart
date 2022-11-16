@@ -23,14 +23,17 @@ final _router = shelf_router.Router()
   ..get('/token/<serialNumber>', _tokenHandler);
 
 RSAPrivateKey? _tokenPrivateKey01;
+RSAPrivateKey? _capxPrivateKey;
 
 Future main() async {
   final port = int.parse(Platform.environment['PORT'] ?? '8080');
   final cascade = Cascade().add(_router);
 
-  print('Loading private token key...');
+  print('Loading private keys...');
   _tokenPrivateKey01 =
       await parseKeyFromFile<RSAPrivateKey>('/run/secrets/token_key_01');
+  _capxPrivateKey =
+      await parseKeyFromFile<RSAPrivateKey>('/run/secrets/capx_rsa_key');
 
   final server = await shelf_io.serve(
     logRequests().addHandler(cascade.handler),
@@ -440,8 +443,11 @@ Future<Response> _keyInitHandler(Request request, String iso) async {
   }
   print("CRC32 OK!");
 
-  final privKey = await parseKeyFromFile<RSAPrivateKey>('./keys/private.pem');
-  final encrypter = Encrypter(RSA(privateKey: privKey));
+  final capxKey = _capxPrivateKey;
+  if (capxKey == null) {
+    return Response.internalServerError(body: "missing RSA key");
+  }
+  final encrypter = Encrypter(RSA(privateKey: capxKey));
   final decrypted = encrypter.decryptBytes(Encrypted(cipheredTK));
   final transportKey = Uint8List.fromList(decrypted);
 
